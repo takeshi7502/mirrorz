@@ -12,6 +12,8 @@ class Config:
     AS_DOCUMENT = False
     AUTHORIZED_CHATS = ""
     BASE_URL = ""
+    BASE_URL_MODE = "tunnel"
+    BASE_URL_LEGACY = ""
     BOT_TOKEN = ""
     HELPER_TOKENS = ""
     HELPER_STRINGS = ""
@@ -162,6 +164,17 @@ class Config:
     TIMEZONE = "Asia/Kolkata"
     USER_MAX_TASKS = 0
     USER_TIME_INTERVAL = 0
+    USER_QUOTA_ENABLED = False
+    USER_QUOTA_DAILY_LIMIT = 10
+    USER_QUOTA_RESET_HOUR = 3
+    USER_QUOTA_RESET_NOTIFY = False
+    REFERRAL_ENABLED = False
+    REFERRAL_REWARD_QUOTA = 15
+    REFERRAL_REQUIRED_CHAT_ID = 0
+    REFERRAL_REQUIRED_CHAT_LINK = ""
+    REFERRAL_SUBSCRIBE_ENABLED = False
+    REFERRAL_SUBSCRIBE_REWARD_QUOTA = 36
+    REFERRAL_SUBSCRIBE_CHANNEL_LINK = ""
     UPLOAD_PATHS = {}
     DRIVE_CATEGORY_MODE = False
     DRIVE_CATEGORY_SA = ""
@@ -209,13 +222,31 @@ class Config:
         cls.load_env()
 
     @classmethod
+    def get_selector_base_url(cls):
+        if str(cls.BASE_URL_MODE).lower() == "legacy":
+            return cls.BASE_URL_LEGACY
+        return cls.BASE_URL
+
+    @staticmethod
+    def is_database_only(key):
+        return key.startswith(("USER_QUOTA_", "REFERRAL_"))
+
+    @classmethod
+    def deployment_settings(cls, values):
+        return {
+            key: value.strip() if isinstance(value, str) else value
+            for key, value in values.items()
+            if not key.startswith("__") and not cls.is_database_only(key)
+        }
+
+    @classmethod
     def load_config(cls):
         try:
             settings = import_module("config")
         except ModuleNotFoundError:
             return
         for attr in dir(settings):
-            if hasattr(cls, attr):
+            if hasattr(cls, attr) and not cls.is_database_only(attr):
                 value = getattr(settings, attr)
                 if not value:
                     continue
@@ -225,6 +256,7 @@ class Config:
                     value = "rc"
                 elif attr in [
                     "BASE_URL",
+                    "BASE_URL_LEGACY",
                     "RCLONE_SERVE_URL",
                     "INDEX_URL",
                     "SEARCH_API_LINK",
@@ -259,6 +291,8 @@ class Config:
         )
         config_vars = cls.get_all()
         for key in config_vars:
+            if cls.is_database_only(key):
+                continue
             env_value = getenv(key)
             if env_value is not None:
                 converted_value = cls._convert_env_type(key, env_value)
@@ -322,6 +356,7 @@ class Config:
                     value = "rc"
                 elif key in [
                     "BASE_URL",
+                    "BASE_URL_LEGACY",
                     "RCLONE_SERVE_URL",
                     "INDEX_URL",
                     "SEARCH_API_LINK",

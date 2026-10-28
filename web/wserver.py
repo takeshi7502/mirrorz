@@ -198,9 +198,7 @@ async def lifespan(app: FastAPI):
     qbittorrent = await create_client("http://localhost:8090/api/v2/")
     http_session = ClientSession(
         auto_decompress=True,
-        timeout=ClientTimeout(
-            total=None, connect=15, sock_connect=15, sock_read=300
-        ),
+        timeout=ClientTimeout(total=None, connect=15, sock_connect=15, sock_read=300),
     )
     yield
     await aria2.close()
@@ -419,6 +417,18 @@ async def handle_torrent(request: Request):
     return JSONResponse(content)
 
 
+@app.get("/legacy/files", response_class=HTMLResponse)
+async def legacy_files(request: Request):
+    return templates.TemplateResponse(request, "legacy_page.html")
+
+
+@app.api_route(
+    "/legacy/files/torrent", methods=["GET", "POST"], response_class=HTMLResponse
+)
+async def handle_legacy_torrent(request: Request):
+    return await handle_torrent(request)
+
+
 async def handle_rename(gid, data):
     try:
         _type = data["type"]
@@ -615,9 +625,7 @@ async def stream_proxy(
     except (ClientError, TimeoutError) as e:
         raise _stream_offline() from e
 
-    out = {
-        k: v for k, v in upstream.headers.items() if k.lower() not in _HOP
-    }
+    out = {k: v for k, v in upstream.headers.items() if k.lower() not in _HOP}
     out.setdefault("Accept-Ranges", "bytes")
     out.setdefault("Cache-Control", "private, max-age=86400, immutable")
     out["Referrer-Policy"] = "no-referrer"
@@ -865,10 +873,10 @@ async def stream_meta(token: str, request: Request):
 
 @app.exception_handler(HTTPException)
 async def http_error(request: Request, exc: HTTPException):
-    if request.url.path.startswith(("/app/files/", "/api/", "/stream/", "/dl/")):
-        return JSONResponse(
-            {"error": str(exc.detail)}, status_code=exc.status_code
-        )
+    if request.url.path.startswith(
+        ("/app/files/", "/legacy/files/", "/api/", "/stream/", "/dl/")
+    ):
+        return JSONResponse({"error": str(exc.detail)}, status_code=exc.status_code)
     return HTMLResponse(
         f"<h1>{exc.status_code}: {escape(str(exc.detail))}</h1>",
         status_code=exc.status_code,
@@ -878,6 +886,8 @@ async def http_error(request: Request, exc: HTTPException):
 @app.exception_handler(Exception)
 async def server_error(request: Request, exc: Exception):
     LOGGER.error(f"Unhandled error on {request.url.path}: {exc}")
-    if request.url.path.startswith(("/app/files/", "/api/", "/stream/", "/dl/")):
+    if request.url.path.startswith(
+        ("/app/files/", "/legacy/files/", "/api/", "/stream/", "/dl/")
+    ):
         return JSONResponse({"error": "Internal server error"}, status_code=500)
     return HTMLResponse("<h1>500: Internal server error</h1>", status_code=500)

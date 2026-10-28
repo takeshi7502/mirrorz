@@ -42,6 +42,7 @@ from ..ext_utils.files_utils import (
 from ..ext_utils.links_utils import is_gdrive_id
 from ..ext_utils.status_utils import get_readable_file_size, get_readable_time
 from ..ext_utils.task_manager import check_running_tasks, start_from_queued
+from ..ext_utils.user_quota_manager import quota_confirm_task, quota_release_task
 from ..mirror_leech_utils.uphoster_utils.multi_upload import MultiUphosterUpload
 from ..mirror_leech_utils.gdrive_utils.upload import GoogleDriveUpload
 from ..mirror_leech_utils.rclone_utils.transfer import RcloneTransferHelper
@@ -63,6 +64,7 @@ from ..telegram_helper.message_utils import (
     delete_message,
     delete_status,
     send_message,
+    set_message_reaction,
     update_status_message,
 )
 
@@ -96,7 +98,21 @@ class TaskListener(TaskConfig):
                 self.same_dir[self.folder_name]["tasks"].remove(self.mid)
                 self.same_dir[self.folder_name]["total"] -= 1
 
+    async def _task_reaction(self, accepted):
+        if accepted:
+            if getattr(self, "_task_failed", False) or getattr(
+                self, "_start_reaction_sent", False
+            ):
+                return
+            self._start_reaction_sent = True
+        else:
+            self._task_failed = True
+        await set_message_reaction(self.message, "✅" if accepted else "❌")
+
     async def on_download_start(self):
+        if self.is_cancelled or getattr(self, "_task_failed", False):
+            return
+        await self._task_reaction(True)
         mode_name = "Leech" if self.is_leech else "Mirror"
         if self.bot_pm and self.is_super_chat:
             self.pm_msg = await send_message(
@@ -426,6 +442,7 @@ class TaskListener(TaskConfig):
     async def on_upload_complete(
         self, link, files, folders, mime_type, rclone_path="", dir_id=""
     ):
+        await quota_confirm_task(self)
         if (
             self.is_super_chat
             and (Config.INC_TASK_NOTIFY or Config.INC_TASK_RESUME)
@@ -670,6 +687,8 @@ class TaskListener(TaskConfig):
         await start_from_queued()
 
     async def on_download_error(self, error, button=None, is_limit=False):
+        await self._task_reaction(False)
+        await quota_release_task(self, "download_error")
         async with task_dict_lock:
             if self.mid in task_dict:
                 del task_dict[self.mid]
@@ -735,6 +754,8 @@ class TaskListener(TaskConfig):
             await remove(self.thumb)
 
     async def on_upload_error(self, error):
+        await self._task_reaction(False)
+        await quota_release_task(self, "upload_error")
         async with task_dict_lock:
             if self.mid in task_dict:
                 del task_dict[self.mid]

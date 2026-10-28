@@ -73,11 +73,7 @@ class DbManager:
         if self._return:
             return
         settings = import_module("config")
-        config_file = {
-            key: value.strip() if isinstance(value, str) else value
-            for key, value in vars(settings).items()
-            if not key.startswith("__")
-        }
+        config_file = Config.deployment_settings(vars(settings))
         await self.db.settings.deployConfig.replace_one(
             {"_id": _part()}, config_file, upsert=True
         )

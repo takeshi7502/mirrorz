@@ -31,15 +31,17 @@ async def speedtest_command(_, message):
         return
 
     try:
-        results.results.share()
+        await sync_to_async(results.results.share)
     except Exception:
         pass
 
     result = results.results.dict()
     text = format_result(result)
     try:
-        await send_message(message, text, photo=result.get("share"))
-        await delete_message(status)
+        sent = await send_message(message, text, photo=result.get("share"))
+        if sent and not isinstance(sent, str):
+            await delete_message(status)
+            return
     except Exception as err:
         LOGGER.error(str(err))
-        await edit_message(status, text)
+    await edit_message(status, text)

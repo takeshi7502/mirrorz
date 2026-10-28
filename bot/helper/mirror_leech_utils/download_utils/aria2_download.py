@@ -1,6 +1,8 @@
 from aiofiles.os import remove, path as aiopath
 from aiofiles import open as aiopen
 from base64 import b64encode
+from aiohttp import ClientSession, ClientTimeout
+from urllib.parse import urlsplit, urlunsplit
 from aiohttp.client_exceptions import ClientError
 from asyncio import TimeoutError
 
@@ -9,8 +11,45 @@ from ....core.config_manager import Config
 from ....core.torrent_manager import TorrentManager, is_metadata, aria2_name
 from ...ext_utils.bot_utils import bt_selection_buttons
 from ...ext_utils.task_manager import check_running_tasks
+from ...ext_utils.user_quota_manager import quota_precheck
 from ...mirror_leech_utils.status_utils.aria2_status import Aria2Status
 from ...telegram_helper.message_utils import send_status_message, send_message
+
+
+MIUI_OTA_SOURCE_HOST = "bigota.d.miui.com"
+MIUI_OTA_MIRROR_HOST = "bn.d.miui.com"
+
+
+async def _rewrite_miui_ota_link(link):
+    parsed = urlsplit(link)
+    if (
+        parsed.scheme not in ("http", "https")
+        or parsed.netloc.lower() != MIUI_OTA_SOURCE_HOST
+    ):
+        return link
+
+    mirror_link = urlunsplit(
+        (
+            parsed.scheme,
+            MIUI_OTA_MIRROR_HOST,
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+    timeout = ClientTimeout(total=10)
+    try:
+        async with ClientSession(timeout=timeout) as session:
+            async with session.head(mirror_link, allow_redirects=True) as resp:
+                if resp.status < 400:
+                    LOGGER.info(f"MIUI OTA mirror available, using: {mirror_link}")
+                    return mirror_link
+                LOGGER.info(
+                    f"MIUI OTA mirror unavailable ({resp.status}), fallback: {link}"
+                )
+    except Exception as e:
+        LOGGER.info(f"MIUI OTA mirror check failed ({e}), fallback: {link}")
+    return link
 
 
 async def add_aria2_download(listener, dpath, header, ratio, seed_time):
@@ -19,6 +58,7 @@ async def add_aria2_download(listener, dpath, header, ratio, seed_time):
     ):
         await listener.on_download_error("Torrent and magnet downloads are disabled.")
         return
+    listener.link = await _rewrite_miui_ota_link(listener.link)
     a2c_opt = {"dir": dpath}
     if listener.name:
         a2c_opt["out"] = listener.name
@@ -64,6 +104,16 @@ async def add_aria2_download(listener, dpath, header, ratio, seed_time):
     if await aiopath.exists(listener.link):
         await remove(listener.link)
 
+    if "bittorrent" in download or is_metadata(download):
+        listener.is_torrent = True
+        quota_error = await quota_precheck(
+            listener.message, quota_cost=2, existing_only=True
+        )
+        if quota_error:
+            await TorrentManager.aria2_remove(download)
+            await listener.on_download_error(quota_error)
+            return
+
     name = aria2_name(download)
     async with task_dict_lock:
         task_dict[listener.mid] = Aria2Status(listener, gid, queued=add_to_queue)
@@ -82,7 +132,7 @@ async def add_aria2_download(listener, dpath, header, ratio, seed_time):
 
     if (
         not add_to_queue
-        and (not listener.select or not Config.BASE_URL)
+        and (not listener.select or not Config.get_selector_base_url())
         and listener.multi <= 1
         and not listener.is_rss
     ):

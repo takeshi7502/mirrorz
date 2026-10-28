@@ -43,7 +43,7 @@ from .restart import (
 )
 from .rss import get_rss_menu, rss_listener
 from .search import torrent_search, torrent_search_update, initiate_search_tools
-from .services import start, start_cb, login, ping, log, log_cb
+from .services import start, start_cb, login, ping, log, log_cb, quota
 from .shell import run_shell
 from .stats import bot_stats, stats_pages, get_packages_version
 from .status import task_status, status_pages
@@ -106,6 +106,7 @@ __all__ = [
     "initiate_search_tools",
     "start",
     "start_cb",
+    "quota",
     "login",
     "bot_help",
     "picture_add",

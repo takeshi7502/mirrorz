@@ -34,6 +34,7 @@ from ..helper.ext_utils.links_utils import (
     is_url,
 )
 from ..helper.ext_utils.task_manager import pre_task_check
+from ..helper.ext_utils.user_quota_manager import quota_task, quota_reserve_task
 from ..helper.listeners.task_listener import TaskListener
 from ..helper.mirror_leech_utils.download_utils.alldebrid_resolver import (
     alldebrid_resolve,
@@ -69,7 +70,7 @@ from ..helper.mirror_leech_utils.download_utils.telegram_download import (
 from ..helper.telegram_helper.button_build import ButtonMaker
 from ..helper.telegram_helper.bot_commands import BotCommands
 from ..helper.telegram_helper.message_utils import (
-    auto_delete_message,
+    set_message_reaction,
     delete_links,
     edit_message,
     get_tg_link_message,
@@ -112,14 +113,17 @@ class Mirror(TaskListener):
         self.is_seedr = is_seedr
         self.is_uphoster = is_uphoster
 
+    @quota_task
     async def new_event(self):
         if self.is_leech:
             if Config.DISABLE_LEECH:
+                await set_message_reaction(self.message, "❌")
                 await send_message(
                     self.message, "The Leech command is currently disabled."
                 )
                 return
         elif Config.DISABLE_MIRROR and not self.is_uphoster:
+            await set_message_reaction(self.message, "❌")
             await send_message(
                 self.message, "The Mirror command is currently disabled."
             )
@@ -127,12 +131,13 @@ class Mirror(TaskListener):
         text = self.message.text.split("\n")
         input_list = text[0].split(" ")
 
-        check_msg, check_button = await pre_task_check(self.message)
+        check_msg, check_button = await pre_task_check(
+            self.message, quota_cost=2 if self.is_qbit else 1
+        )
         if check_msg:
+            await set_message_reaction(self.message, "❌")
             await delete_links(self.message)
-            await auto_delete_message(
-                await send_message(self.message, check_msg, check_button)
-            )
+            await send_message(self.message, check_msg, check_button)
             return
 
         args = {
@@ -179,10 +184,12 @@ class Mirror(TaskListener):
         arg_parser(input_list[1:], args)
 
         if Config.DISABLE_BULK and args.get("-b", False):
+            await set_message_reaction(self.message, "❌")
             await send_message(self.message, "Bulk downloads are currently disabled.")
             return
 
         if Config.DISABLE_MULTI and int(args.get("-i", 1)) > 1:
+            await set_message_reaction(self.message, "❌")
             await send_message(
                 self.message,
                 "Multi-downloads are currently disabled. Please try without the -i flag.",
@@ -190,6 +197,7 @@ class Mirror(TaskListener):
             return
 
         if Config.DISABLE_SEED and args.get("-d", False):
+            await set_message_reaction(self.message, "❌")
             await send_message(
                 self.message,
                 "Seeding is currently disabled. Please try without the -d flag.",
@@ -197,6 +205,7 @@ class Mirror(TaskListener):
             return
 
         if Config.DISABLE_FF_MODE and args.get("-ff"):
+            await set_message_reaction(self.message, "❌")
             await send_message(self.message, "FFmpeg commands are currently disabled.")
             return
 
@@ -336,6 +345,7 @@ class Mirror(TaskListener):
             try:
                 reply_to, session = await get_tg_link_message(self.link)
             except Exception as e:
+                await set_message_reaction(self.message, "❌")
                 await send_message(self.message, f"ERROR: {e}")
                 await self.remove_from_same_dir()
                 await delete_links(self.message)
@@ -410,6 +420,7 @@ class Mirror(TaskListener):
             and not is_gdrive_link(self.link)
             and not is_mega_link(self.link)
         ):
+            await set_message_reaction(self.message, "❌")
             await send_message(
                 self.message, COMMAND_USAGE["mirror"][0], COMMAND_USAGE["mirror"][1]
             )
@@ -422,7 +433,11 @@ class Mirror(TaskListener):
 
         try:
             await self.before_start()
+            if self.is_cancelled:
+                return
+            await quota_reserve_task(self)
         except Exception as e:
+            await set_message_reaction(self.message, "❌")
             await send_message(self.message, e)
             await self.remove_from_same_dir()
             await delete_links(self.message)
@@ -453,12 +468,14 @@ class Mirror(TaskListener):
                 e = str(e)
                 LOGGER.info(e)
                 if e.startswith("ERROR:"):
+                    await set_message_reaction(self.message, "❌")
                     await send_message(self.message, e)
                     await self.remove_from_same_dir()
                     await delete_links(self.message)
                     return
                 resolved = None
             except Exception as e:
+                await set_message_reaction(self.message, "❌")
                 await send_message(self.message, e)
                 await self.remove_from_same_dir()
                 await delete_links(self.message)
@@ -492,11 +509,13 @@ class Mirror(TaskListener):
                     e = str(e)
                     LOGGER.info(e)
                     if e.startswith("ERROR:"):
+                        await set_message_reaction(self.message, "❌")
                         await send_message(self.message, e)
                         await self.remove_from_same_dir()
                         await delete_links(self.message)
                         return
                 except Exception as e:
+                    await set_message_reaction(self.message, "❌")
                     await send_message(self.message, e)
                     await self.remove_from_same_dir()
                     await delete_links(self.message)
@@ -517,11 +536,13 @@ class Mirror(TaskListener):
                     if "This link requires a password!" not in e:
                         LOGGER.info(e)
                     if e.startswith("ERROR:"):
+                        await set_message_reaction(self.message, "❌")
                         await send_message(self.message, e)
                         await self.remove_from_same_dir()
                         await delete_links(self.message)
                         return
                 except Exception as e:
+                    await set_message_reaction(self.message, "❌")
                     await send_message(self.message, e)
                     await self.remove_from_same_dir()
                     await delete_links(self.message)

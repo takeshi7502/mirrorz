@@ -11,6 +11,7 @@ from ..ext_utils.bot_utils import bt_selection_buttons
 from ..ext_utils.files_utils import clean_unwanted
 from ..ext_utils.status_utils import get_task_by_gid
 from ..ext_utils.task_manager import stop_duplicate_check, limit_checker
+from ..ext_utils.user_quota_manager import quota_precheck
 from ..mirror_leech_utils.status_utils.aria2_status import Aria2Status
 from ..telegram_helper.message_utils import (
     send_message,
@@ -30,6 +31,13 @@ async def _on_download_started(api, data):
         await sleep(1)
         if task := await get_task_by_gid(gid):
             task.listener.is_torrent = True
+            quota_error = await quota_precheck(
+                task.listener.message, quota_cost=2, existing_only=True
+            )
+            if quota_error:
+                await TorrentManager.aria2_remove(download)
+                await task.listener.on_download_error(quota_error)
+                return
             if task.listener.select:
                 metamsg = "<b>Fetching Metadata...</b>\n\n<i>Hold tight! You can select files once it's done.</i>\n\n<b>💡 Tip:</b> Use <code>.torrent</code> file instead to skip this wait."
                 meta = await send_message(task.listener.message, metamsg)
@@ -51,6 +59,13 @@ async def _on_download_started(api, data):
         download = await api.tellStatus(gid)
         if "bittorrent" in download:
             task.listener.is_torrent = True
+            quota_error = await quota_precheck(
+                task.listener.message, quota_cost=2, existing_only=True
+            )
+            if quota_error:
+                await TorrentManager.aria2_remove(download)
+                await task.listener.on_download_error(quota_error)
+                return
 
         task.listener.name = aria2_name(download)
         msg, button = await stop_duplicate_check(task.listener)
@@ -89,7 +104,7 @@ async def _on_download_complete(api, data):
         LOGGER.info(f"Gid changed from {gid} to {new_gid}")
         if task := await get_task_by_gid(new_gid):
             task.listener.is_torrent = True
-            if Config.BASE_URL and task.listener.select:
+            if Config.get_selector_base_url() and task.listener.select:
                 if not task.queued:
                     await api.forcePause(new_gid)
                 SBUTTONS = bt_selection_buttons(new_gid, task.listener.message)

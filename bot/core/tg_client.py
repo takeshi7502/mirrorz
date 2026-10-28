@@ -20,6 +20,8 @@ def db_partition_id(bot_id):
 
 
 class TgClient:
+    _MAX_CONCURRENT_TRANSMISSIONS = 16
+    _RESTART_BATCH_SIZE = 3
     _lock = Lock()
     _hlock = Lock()
     _ulock = Lock()
@@ -48,11 +50,11 @@ class TgClient:
         kwargs["parse_mode"] = enums.ParseMode.HTML
         kwargs["in_memory"] = True
         for param, value in {
-            "max_concurrent_transmissions": 100,
+            "max_concurrent_transmissions": cls._MAX_CONCURRENT_TRANSMISSIONS,
             "skip_updates": False,
         }.items():
             if param in signature(Client.__init__).parameters:
-                kwargs[param] = value
+                kwargs.setdefault(param, value)
         return Client(*args, **kwargs)
 
     @classmethod
@@ -181,9 +183,7 @@ class TgClient:
             await gather(
                 *(
                     cls.start_sclient(no, b_token)
-                    for no, b_token in enumerate(
-                        Config.STREAM_TOKENS.split(), start=1
-                    )
+                    for no, b_token in enumerate(Config.STREAM_TOKENS.split(), start=1)
                 )
             )
 
@@ -352,20 +352,43 @@ class TgClient:
             LOGGER.info("All Client(s) stopped")
 
     @classmethod
+    async def _restart_clients(cls, clients):
+        unique = {id(client): client for client in clients if client is not None}
+        clients = list(unique.values())
+        failures = []
+        for index in range(0, len(clients), cls._RESTART_BATCH_SIZE):
+            batch = clients[index : index + cls._RESTART_BATCH_SIZE]
+            results = await gather(
+                *(client.restart() for client in batch), return_exceptions=True
+            )
+            for client, result in zip(batch, results):
+                if isinstance(result, BaseException):
+                    failures.append(result)
+                    LOGGER.error(
+                        "Client %s restart failed: %s",
+                        getattr(client, "name", "unknown"),
+                        result,
+                    )
+        return failures
+
+    @classmethod
     async def reload(cls):
         async with cls._lock:
-            await cls.bot.restart()
-            if cls.user:
-                await cls.user.restart()
-            if cls.helper_bots:
-                await gather(*[h_bot.restart() for h_bot in cls.helper_bots.values()])
-            if cls.helper_users:
-                await gather(
-                    *[h_user.restart() for h_user in cls.helper_users.values()]
+            clients = [
+                cls.bot,
+                cls.user,
+                *cls.helper_bots.values(),
+                *cls.helper_users.values(),
+                *cls.stream_bots.values(),
+            ]
+            try:
+                failures = await cls._restart_clients(clients)
+            finally:
+                await UserSessionPool.stop_all()
+            if failures:
+                raise RuntimeError(
+                    f"Failed to restart {len(failures)} Telegram client(s); check logs"
                 )
-            if cls.stream_bots:
-                await gather(*[s_bot.restart() for s_bot in cls.stream_bots.values()])
-            await UserSessionPool.stop_all()
             LOGGER.info("All Client(s) restarted")
 
 

@@ -1,0 +1,5 @@
+# Use together with docker-compose.yml when the legacy selector needs a direct host URL.
+services:
+  app:
+    ports:
+      - "8080:8080"

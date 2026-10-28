@@ -39,5 +39,11 @@ class Language:
             self.lang_code, self._modules[Config.DEFAULT_LANG]
         )
         return getattr(
-            lang_module, key, getattr(self._modules[Config.DEFAULT_LANG], key, key)
+            lang_module,
+            key,
+            getattr(
+                self._modules[Config.DEFAULT_LANG],
+                key,
+                getattr(self._modules.get("en"), key, key),
+            ),
         )

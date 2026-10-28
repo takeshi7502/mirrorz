@@ -1,0 +1,5 @@
+# Minimal dependencies for the offline tests, including on Windows.
+fastapi
+httpx
+jinja2
+tzdata

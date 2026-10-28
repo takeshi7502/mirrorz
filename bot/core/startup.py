@@ -113,18 +113,14 @@ async def load_settings():
         deploy_filter = {"_id": PART}
         try:
             settings = import_module("config")
-            config_file = {
-                key: value.strip() if isinstance(value, str) else value
-                for key, value in vars(settings).items()
-                if not key.startswith("__")
-            }
+            config_file = Config.deployment_settings(vars(settings))
         except ModuleNotFoundError:
             config_file = {}
         config_file.update(
             {
                 key: value.strip() if isinstance(value, str) else value
                 for key, value in environ.items()
-                if key in var_list
+                if key in var_list and not Config.is_database_only(key)
             }
         )
 
@@ -240,14 +236,15 @@ async def load_settings():
                     migrated.append((uid, dead))
                 user_data[uid] = row
             LOGGER.info("Users Data has been imported from MongoDB")
+            from ..helper.ext_utils.user_quota_manager import quota_clear_all_pending
+
+            await quota_clear_all_pending()
             for uid, dead in migrated:
                 await database.update_user_data(uid)
                 for key in dead:
                     await database.update_user_doc(uid, key)
             if migrated:
-                LOGGER.info(
-                    f"Cleared deprecated settings for {len(migrated)} user(s)"
-                )
+                LOGGER.info(f"Cleared deprecated settings for {len(migrated)} user(s)")
 
         if rss_exists:
             rows = database.db.rss[PART].find({})
@@ -416,10 +413,12 @@ async def load_configurations():
             access_pwd = token_bytes(32).hex()
             Config.WEB_ACCESS_PASSWORD = access_pwd
         env = f"WEB_ACCESS_PASSWORD={access_pwd} "
-        bot_loop.create_task(cmd_exec(
-            f"{env}gunicorn -k uvicorn.workers.UvicornWorker -w 1 web.wserver:app --bind 0.0.0.0:{PORT}",
-            shell=True,
-        ))
+        bot_loop.create_task(
+            cmd_exec(
+                f"{env}gunicorn -k uvicorn.workers.UvicornWorker -w 1 web.wserver:app --bind 0.0.0.0:{PORT}",
+                shell=True,
+            )
+        )
         bot_loop.create_task(cmd_exec("python3 cron_boot.py", shell=True))
 
     if Config.DISABLE_STREAM:

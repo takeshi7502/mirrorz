@@ -1,5 +1,5 @@
 from asyncio import sleep, gather
-from random import choice
+from random import choice, shuffle
 from re import compile as re_compile, match as re_match
 from time import time
 
@@ -24,6 +24,7 @@ from pyrogram.errors import (
     MediaCaptionTooLong,
     EntityBoundsInvalid,
     PeerIdInvalid,
+    ChatWriteForbidden,
 )
 
 try:
@@ -46,6 +47,59 @@ from ..ext_utils.bot_utils import SetInterval, download_image_url, fetch_drive_c
 from ..ext_utils.exceptions import TgLinkException
 from ..ext_utils.status_utils import get_readable_message
 from .button_build import ButtonMaker
+
+SUCCESS_REACTIONS = ["👌", "👍", "❤️", "💯"]
+FAIL_REACTIONS = ["🤨", "👎", "💔", "🖕"]
+_reaction_bad_cache = {}
+
+
+def _get_reaction_candidates(chat_id, emoji):
+    if emoji == "✅":
+        candidates = SUCCESS_REACTIONS.copy()
+    elif emoji == "❌":
+        candidates = FAIL_REACTIONS.copy()
+    else:
+        candidates = [emoji]
+    now = time()
+    for key, expires in list(_reaction_bad_cache.items()):
+        if expires <= now:
+            _reaction_bad_cache.pop(key, None)
+    candidates = [
+        candidate
+        for candidate in candidates
+        if (chat_id, candidate) not in _reaction_bad_cache
+    ]
+    shuffle(candidates)
+    return candidates
+
+
+async def set_message_reaction(message, emoji):
+    """Use wzgram's bound API; feedback must not delay or fail a transfer."""
+    if getattr(message, "is_mock", False):
+        return
+
+    chat_id = getattr(getattr(message, "chat", None), "id", None)
+    candidates = _get_reaction_candidates(chat_id, emoji)
+    if not candidates:
+        return
+
+    for candidate in candidates:
+        try:
+            await message.react(emoji=candidate)
+            return
+        except FloodWait:
+            return
+        except Exception as error:
+            if (
+                "REACTION_INVALID" in str(error).upper()
+                or type(error).__name__ == "ReactionInvalid"
+            ):
+                if len(_reaction_bad_cache) >= 1024:
+                    _reaction_bad_cache.pop(next(iter(_reaction_bad_cache)))
+                _reaction_bad_cache[(chat_id, candidate)] = time() + 600
+                continue
+            LOGGER.debug("Cannot set reaction in chat %s: %s", chat_id, error)
+            return
 
 
 async def send_message(message, text, buttons=None, block=True, photo=None, **kwargs):
@@ -73,6 +127,7 @@ async def send_message(message, text, buttons=None, block=True, photo=None, **kw
                         link_preview_options=LinkPreviewOptions(is_disabled=True),
                         disable_notification=True,
                         reply_markup=buttons,
+                        **kwargs,
                     )
                 if isinstance(message, Message):
                     return await message.reply_photo(
@@ -96,14 +151,17 @@ async def send_message(message, text, buttons=None, block=True, photo=None, **kw
                 if not block:
                     return str(f)
                 await sleep(f.value * 1.2)
-                return await send_message(message, text, buttons, block, photo)
+                return await send_message(
+                    message, text, buttons, block, photo, **kwargs
+                )
             except MediaCaptionTooLong:
                 return await send_message(
                     message,
-                    text[:1024],
+                    text,
                     buttons,
                     block,
-                    photo,
+                    None,
+                    **kwargs,
                 )
             except (
                 PhotoInvalidDimensions,
@@ -114,7 +172,9 @@ async def send_message(message, text, buttons=None, block=True, photo=None, **kw
                 try:
                     des_dir = await download_image_url(photo)
                     if des_dir:
-                        msg = await send_message(message, text, buttons, block, des_dir)
+                        msg = await send_message(
+                            message, text, buttons, block, des_dir, **kwargs
+                        )
                         from aiofiles.os import remove as aioremove
 
                         await aioremove(des_dir)
@@ -140,24 +200,34 @@ async def send_message(message, text, buttons=None, block=True, photo=None, **kw
             link_preview_options=LinkPreviewOptions(is_disabled=True),
             disable_notification=True,
             reply_markup=buttons,
+            **kwargs,
         )
     except FloodWait as f:
         LOGGER.warning(str(f))
         if not block:
             return str(f)
         await sleep(f.value * 1.2)
-        return await send_message(message, text, buttons)
+        return await send_message(message, text, buttons, block, photo, **kwargs)
     except ReplyMarkupInvalid as rmi:
         LOGGER.warning(str(rmi))
-        return await send_message(message, text, None)
+        return await send_message(message, text, None, block, photo, **kwargs)
     except MessageTooLong:
-        return await send_message(message, text[:4096], buttons, block, photo)
+        return await send_message(message, text[:4096], buttons, block, photo, **kwargs)
     except (MessageEmpty, EntityBoundsInvalid):
-        return await send_message(message, text, parse_mode=ParseMode.DISABLED)
-    except PeerIdInvalid:
+        if kwargs.get("parse_mode") == ParseMode.DISABLED:
+            return "Telegram rejected the message even with parsing disabled"
+        retry_kwargs = {**kwargs, "parse_mode": ParseMode.DISABLED}
+        return await send_message(message, text, buttons, block, photo, **retry_kwargs)
+    except PeerIdInvalid as error:
         LOGGER.warning(f"PeerIdInvalid {type(message)}")  # My Debug Style
-        if isinstance(message, (int, str)):
-            return await send_message(int(message), text, buttons, block, photo)
+        if isinstance(message, str) and message.lstrip("-").isdigit():
+            return await send_message(
+                int(message), text, buttons, block, photo, **kwargs
+            )
+        return str(error)
+    except ChatWriteForbidden as e:
+        LOGGER.warning(f"Cannot send message: {e}")
+        return str(e)
     except ConnectionError:
         return
     except Exception as e:
@@ -549,9 +619,48 @@ async def update_status_message(sid, force=False):
                 del intervals["status"][sid]
             return
         if text != status_dict[sid]["message"].text:
-            message = await edit_message(
-                status_dict[sid]["message"], text, buttons, block=False, photo="IMAGES"
-            )
+            old_message = status_dict[sid]["message"]
+            if old_message.media and len(text) > 1024:
+                message = await send_message(
+                    old_message.chat.id,
+                    text,
+                    buttons,
+                    block=False,
+                    message_thread_id=getattr(old_message, "message_thread_id", None),
+                )
+                if not isinstance(message, Message):
+                    LOGGER.error(
+                        f"Status with id: {sid} haven't been updated. Error: {message}"
+                    )
+                    return
+                await delete_message(old_message)
+            elif (
+                not old_message.media
+                and len(text) <= 1024
+                and Config.USE_IMAGES
+                and Config.IMAGES
+            ):
+                message = await send_message(
+                    old_message,
+                    text,
+                    buttons,
+                    block=False,
+                    photo="IMAGES",
+                )
+                if not isinstance(message, Message):
+                    LOGGER.error(
+                        f"Status with id: {sid} couldn't restore its image. Error: {message}"
+                    )
+                    return
+                await delete_message(old_message)
+            else:
+                message = await edit_message(
+                    old_message,
+                    text,
+                    buttons,
+                    block=False,
+                    photo="IMAGES" if len(text) <= 1024 else None,
+                )
             if isinstance(message, str):
                 if message.startswith("Telegram says: [40"):
                     del status_dict[sid]
@@ -563,8 +672,10 @@ async def update_status_message(sid, force=False):
                         f"Status with id: {sid} haven't been updated. Error: {message}"
                     )
                 return
-            status_dict[sid]["message"].text = text
-            status_dict[sid]["time"] = time()
+            if not isinstance(message, Message):
+                return
+            message.text = text
+            status_dict[sid].update({"message": message, "time": time()})
 
 
 async def send_status_message(msg, user_id=0):
@@ -588,7 +699,11 @@ async def send_status_message(msg, user_id=0):
                 return
             old_message = status_dict[sid]["message"]
             message = await send_message(
-                msg, text, buttons, block=False, photo="IMAGES"
+                msg,
+                text,
+                buttons,
+                block=False,
+                photo="IMAGES" if len(text) <= 1024 else None,
             )
             if isinstance(message, str):
                 LOGGER.error(
@@ -603,7 +718,11 @@ async def send_status_message(msg, user_id=0):
             if text is None:
                 return
             message = await send_message(
-                msg, text, buttons, block=False, photo="IMAGES"
+                msg,
+                text,
+                buttons,
+                block=False,
+                photo="IMAGES" if len(text) <= 1024 else None,
             )
             if isinstance(message, str):
                 LOGGER.error(

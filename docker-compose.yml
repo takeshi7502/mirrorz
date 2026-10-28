@@ -35,6 +35,14 @@ services:
 
     expose:
       - "8080"
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+
+    # Publish this port when using BASE_URL_MODE="legacy" with a direct IP URL.
+    # ports:
+    #   - "8080:8080"
 
   tunnel:
     build:

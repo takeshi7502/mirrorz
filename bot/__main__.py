@@ -118,6 +118,12 @@ async def main():
     bot_loop.create_task(rclone_serve_booter())
     bot_loop.create_task(search_images())
     SessionReaper.start()
+    from .helper.ext_utils.quota_reset_notifier import start_quota_reset_notifier
+
+    start_quota_reset_notifier()
+    from .helper.ext_utils.resource_monitor import start_resource_monitor
+
+    start_resource_monitor()
 
 
 bot_loop.run_until_complete(main())
@@ -194,7 +200,15 @@ async def restart_sessions_confirm(_, query):
         reply_to = message.reply_to_message
         restart_message = await send_message(reply_to, "Restarting Session(s)...")
         await delete_message(message)
-        await TgClient.reload()
+        try:
+            await TgClient.reload()
+        except Exception as error:
+            LOGGER.error("Session restart failed: %s", error)
+            await edit_message(
+                restart_message,
+                "Some sessions could not be restarted. Check the bot logs and retry.",
+            )
+            return
         await add_handlers()
         TgClient.bot.add_handler(
             CallbackQueryHandler(

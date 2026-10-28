@@ -35,6 +35,7 @@ from ..helper.ext_utils.task_manager import (
     limit_checker,
 )
 from ..helper.ext_utils.status_utils import get_readable_file_size
+from ..helper.ext_utils.user_quota_manager import quota_task, quota_reserve_task
 from ..helper.listeners.task_listener import TaskListener
 from ..helper.mirror_leech_utils.download_utils.direct_link_generator import (
     direct_link_generator,
@@ -58,6 +59,7 @@ from ..helper.mirror_leech_utils.telegram_utils.clone import (
 from ..helper.telegram_helper.button_build import ButtonMaker
 from ..helper.telegram_helper.prompt import PromptUnreachable
 from ..helper.telegram_helper.message_utils import (
+    set_message_reaction,
     TgSource,
     auto_delete_message,
     delete_links,
@@ -94,12 +96,14 @@ class Clone(TaskListener):
         super().__init__()
         self.is_clone = True
 
+    @quota_task
     async def new_event(self):
         text = self.message.text.split("\n")
         input_list = text[0].split(" ")
 
         check_msg, check_button = await pre_task_check(self.message)
         if check_msg:
+            await set_message_reaction(self.message, "❌")
             await delete_links(self.message)
             await auto_delete_message(
                 await send_message(self.message, check_msg, check_button)
@@ -169,6 +173,7 @@ class Clone(TaskListener):
         await self.run_multi(input_list, Clone)
 
         if len(self.link) == 0:
+            await set_message_reaction(self.message, "❌")
             await send_message(
                 self.message, COMMAND_USAGE["clone"][0], COMMAND_USAGE["clone"][1]
             )
@@ -180,7 +185,11 @@ class Clone(TaskListener):
         LOGGER.info(self.link)
         try:
             await self.before_start()
+            if self.is_cancelled:
+                return
+            await quota_reserve_task(self)
         except Exception as e:
+            await set_message_reaction(self.message, "❌")
             await send_message(self.message, e)
             await delete_links(self.message)
             return
@@ -195,9 +204,11 @@ class Clone(TaskListener):
             try:
                 await UserSession.unlock(self.user_id)
             except TgLinkException as e:
+                await set_message_reaction(self.message, "❌")
                 await send_message(self.message, f"ERROR: {e}")
                 return
             except PromptUnreachable as e:
+                await set_message_reaction(self.message, "❌")
                 await send_message(self.message, f"ERROR: {e}", _pm_button())
                 return
             async with UserSession.borrow(self.user_id) as mine:
@@ -211,6 +222,7 @@ class Clone(TaskListener):
                 self.link, clone_limit(), extra=mine
             )
         except TgLinkException as e:
+            await set_message_reaction(self.message, "❌")
             await send_message(self.message, f"ERROR: {e}")
             return
         self.clone_source = source
@@ -295,6 +307,7 @@ class Clone(TaskListener):
             except DirectDownloadLinkException as e:
                 LOGGER.error(str(e))
                 if str(e).startswith("ERROR:"):
+                    await set_message_reaction(self.message, "❌")
                     await send_message(self.message, str(e))
                     return
         if is_gdrive_link(self.link) or is_gdrive_id(self.link):
@@ -302,13 +315,16 @@ class Clone(TaskListener):
                 GoogleDriveCount().count, self.link, self.user_id
             )
             if mime_type is None:
+                await set_message_reaction(self.message, "❌")
                 await send_message(self.message, self.name)
                 return
             msg, button = await stop_duplicate_check(self)
             if msg:
+                await set_message_reaction(self.message, "❌")
                 await send_message(self.message, msg, button)
                 return
             if limit_exceeded := await limit_checker(self):
+                await set_message_reaction(self.message, "❌")
                 await send_message(
                     self.message,
                     f"""〶 <b><i><u>Limit Breached:</u></i></b>
@@ -373,6 +389,7 @@ class Clone(TaskListener):
                 if res[2] != 0:
                     if res[2] != -9:
                         msg = f"Error: While getting rclone stat. Path: {remote}:{src_path}. Stderr: {res[1][:4000]}"
+                        await set_message_reaction(self.message, "❌")
                         await send_message(self.message, msg)
                     return
                 rstat = loads(res[0])
@@ -465,6 +482,7 @@ class Clone(TaskListener):
                 )
         elif is_mega_link(self.link):
             if is_mega_folder_link(self.link):
+                await set_message_reaction(self.message, "❌")
                 await send_message(
                     self.message,
                     "Mega folder clone is not supported. Only file links can be cloned.",
@@ -474,6 +492,7 @@ class Clone(TaskListener):
             mega_email = self.user_dict.get("MEGA_EMAIL") or ""
             mega_password = self.user_dict.get("MEGA_PASSWORD") or ""
             if not mega_email or not mega_password:
+                await set_message_reaction(self.message, "❌")
                 await send_message(
                     self.message, "Mega credentials not configured for this user."
                 )
@@ -497,6 +516,7 @@ class Clone(TaskListener):
             await self.on_upload_complete(flink, files, folders, mime_type, dir_id=None)
             LOGGER.info(f"Cloning Done: {self.name}")
         else:
+            await set_message_reaction(self.message, "❌")
             await send_message(
                 self.message, COMMAND_USAGE["clone"][0], COMMAND_USAGE["clone"][1]
             )

@@ -214,6 +214,8 @@ MIRROR_LOG_ID = ""
 # qBittorrent/Aria2c
 TORRENT_TIMEOUT = 0
 BASE_URL = ""
+BASE_URL_MODE = "tunnel"  # tunnel: upstream UI; legacy: previous torrent UI.
+BASE_URL_LEGACY = ""  # e.g. http://your-server:8080, used in legacy mode only.
 WEB_PINCODE = True
 
 # Queueing system
